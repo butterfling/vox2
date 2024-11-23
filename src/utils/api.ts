@@ -12,9 +12,19 @@ import superjson from "superjson";
 import { type AppRouter } from "@/server/api/root";
 
 const getBaseUrl = () => {
-  if (typeof window !== "undefined") return ""; // browser should use relative url
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`; // SSR should use vercel url
-  return `http://localhost:${process.env.PORT ?? 3000}`; // dev SSR should use localhost
+  if (typeof window !== "undefined") {
+    // browser should use relative path
+    console.log("Browser environment detected, using relative path");
+    return "";
+  }
+  if (process.env.VERCEL_URL) {
+    // SSR should use vercel url
+    console.log(`Vercel environment detected, using URL: https://${process.env.VERCEL_URL}`);
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  // dev SSR should use localhost
+  console.log(`Development environment detected, using URL: http://localhost:${process.env.PORT ?? 3000}`);
+  return `http://localhost:${process.env.PORT ?? 3000}`;
 };
 
 /** A set of type-safe react-query hooks for your tRPC API. */
@@ -25,6 +35,7 @@ export const api = createTRPCNext<AppRouter>({
         defaultOptions: {
           queries: {
             refetchOnWindowFocus: false,
+            retry: false,
           },
         },
       },
@@ -48,6 +59,11 @@ export const api = createTRPCNext<AppRouter>({
         }),
         httpBatchLink({
           url: `${getBaseUrl()}/api/trpc`,
+          headers() {
+            return {
+              // Add any necessary headers here
+            };
+          },
         }),
       ],
     };

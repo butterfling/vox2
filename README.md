@@ -6,6 +6,7 @@
 
 Live Video Conferencing app which transcribes, translates and speaks out the text to all users on the call in realtime. Also provides with the meeting minutes/summary of the meeting.
 
+
 # Tech Stack
 
 - NextJS

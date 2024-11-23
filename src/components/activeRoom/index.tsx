@@ -17,10 +17,11 @@ import {
   RoomEvent,
   RoomOptions,
   VideoPresets,
+  type InternalRoomOptions,
 } from "livekit-client";
 import { useRouter } from "next/router";
 import Pusher from "pusher-js";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import Loader from "../loader";
 import FullScreenLoader from "../fullScreenLoader";
 type ActiveRoomProps = {
@@ -39,36 +40,19 @@ const ActiveRoom = ({
   userId,
   selectedLanguage,
 }: ActiveRoomProps) => {
-  const { data, error, isLoading } = api.rooms.joinRoom.useQuery({ roomName });
-
+  const { mutate: joinRoom, data, error, isLoading } = api.rooms.joinRoom.useMutation();
+  const pusherMutation = api.pusher.sendTranscript.useMutation();
   const router = useRouter();
-
+  const isReady = router.isReady;
   const { region, hq } = router.query;
 
-  //   const liveKitUrl = useServerUrl(region as string | undefined);
-
-  const roomOptions = useMemo((): RoomOptions => {
-    return {
-      videoCaptureDefaults: {
-        deviceId: userChoices.videoDeviceId ?? undefined,
-        resolution: hq === "true" ? VideoPresets.h2160 : VideoPresets.h720,
-      },
-      publishDefaults: {
-        videoSimulcastLayers:
-          hq === "true"
-            ? [VideoPresets.h1080, VideoPresets.h720]
-            : [VideoPresets.h540, VideoPresets.h216],
-      },
-      audioCaptureDefaults: {
-        deviceId: userChoices.audioDeviceId ?? undefined,
-      },
-      adaptiveStream: { pixelDensity: "screen" },
-      dynacast: true,
-    };
-  }, [userChoices, hq]);
-
+  // State declarations
   const [transcription, setTranscription] = useState("");
-  const socketRef = useRef<WebSocket | null>(null);
+  const [caption, setCaption] = useState({
+    sender: "",
+    message: "",
+  });
+  const [myTranscripts, setMyTranscripts] = useState<string[]>([]);
   const [transcriptionQueue, setTranscriptionQueue] = useState<
     {
       sender: string;
@@ -77,22 +61,46 @@ const ActiveRoom = ({
       isFinal: boolean;
     }[]
   >([]);
+  const [room, setRoom] = useState<Room | null>(null);
 
-  const [caption, setCaption] = useState({
-    sender: "",
-    message: "",
-  });
+  // Refs
+  const socketRef = useRef<WebSocket | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
 
-  const pusherMutation = api.pusher.sendTranscript.useMutation();
-  const [ myTranscripts , setMyTranscripts ] = useState<string[]>([])
+  // Memoized values
+  const roomOptions = useMemo((): Partial<RoomOptions> => {
+    return {
+      adaptiveStream: false,
+      dynacast: false,
+      stopMicTrackOnMute: true,
+      audioCaptureDefaults: {
+        deviceId: userChoices.audioDeviceId ?? undefined,
+      },
+      videoCaptureDefaults: {
+        deviceId: userChoices.videoDeviceId ?? undefined,
+      },
+    };
+  }, [userChoices]);
+
+  useEffect(() => {
+    if (isReady && roomName) {
+      console.log('Attempting to join room:', roomName);
+      joinRoom({ roomName });
+    }
+  }, [isReady, roomName, joinRoom]);
+
   useEffect(() => {
     console.log("Running transcription");
     navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
       if (!MediaRecorder.isTypeSupported("audio/webm"))
         return alert("Browser not supported");
+      
+      mediaStreamRef.current = stream;
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: "audio/webm",
       });
+      mediaRecorderRef.current = mediaRecorder;
 
       const webSocketUrl =
         selectedLanguage == "en-US"
@@ -107,7 +115,7 @@ const ActiveRoom = ({
       socket.onopen = () => {
         console.log({ event: "onopen" });
         mediaRecorder.addEventListener("dataavailable", async (event) => {
-          if (event.data.size > 0 && socket.readyState === 1) {
+          if (event.data.size > 0 && socket.readyState === 1 && room !== null) {
             socket.send(event.data);
           }
         });
@@ -118,14 +126,14 @@ const ActiveRoom = ({
         const received = message && JSON.parse(message?.data);
         const transcript = received.channel?.alternatives[0].transcript;
 
-        if (transcript !== "" && transcript !== undefined) {
-          if(myTranscripts.includes(transcript)) return
+        if (transcript !== "" && transcript !== undefined && room !== null) {
+          if (myTranscripts.includes(transcript)) return;
           await pusherMutation.mutate({
             message: transcript,
             roomName: roomName,
             isFinal: true,
           });
-          setMyTranscripts((prev) => [...prev, transcript])
+          setMyTranscripts((prev) => [...prev, transcript]);
           if (
             !(
               transcript.toLowerCase() === "is" ||
@@ -146,6 +154,21 @@ const ActiveRoom = ({
 
       socketRef.current = socket;
     });
+
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.close();
+        socketRef.current = null;
+      }
+      if (mediaRecorderRef.current) {
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current = null;
+      }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach(track => track.stop());
+        mediaStreamRef.current = null;
+      }
+    };
   }, [selectedLanguage]);
 
   useEffect(() => {
@@ -179,6 +202,7 @@ const ActiveRoom = ({
       clearTimeout(timer);
     };
   }, [transcriptionQueue]);
+
   useEffect(() => {
     const pusher = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY as string, {
       cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER as string,
@@ -205,42 +229,80 @@ const ActiveRoom = ({
     };
   }, []);
 
-  if (isLoading) return <FullScreenLoader />;
-  if (error) router.push("/");
+  // Cleanup function for room disconnection
+  const cleanup = useCallback(() => {
+    if (room) {
+      console.log('Cleaning up room connection');
+      room.disconnect();
+      setRoom(null);
+    }
+    // Cleanup WebSocket connection
+    if (socketRef.current) {
+      socketRef.current.close();
+      socketRef.current = null;
+    }
+    // Cleanup MediaRecorder
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current = null;
+    }
+    // Cleanup MediaStream
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+    // Clear transcripts
+    setMyTranscripts([]);
+    setTranscriptionQueue([]);
+    setTranscription("");
+    setCaption({ sender: "", message: "" });
+  }, [room]);
+
+  // Handle component unmount
+  useEffect(() => {
+    return () => {
+      cleanup();
+    };
+  }, [cleanup]);
+
+  // Handle loading and error states
+  if (isLoading || !isReady || !roomName) {
+    return <FullScreenLoader />;
+  }
+
+  if (error) {
+    console.error('Error joining room:', error);
+    router.push('/');
+    return <FullScreenLoader />;
+  }
+
+  if (!data?.token) {
+    return <FullScreenLoader />;
+  }
 
   return (
     <>
-      {error && (
-        <div className="flex h-full w-full items-center justify-center bg-red-500 text-white">
-          {error.message}
-        </div>
-      )}
-      {!error && data && (
-        <LiveKitRoom
-          token={data.accessToken}
-          serverUrl={process.env.NEXT_PUBLIC_LIVEKIT_API_HOST}
-          options={roomOptions}
-          video={userChoices.videoEnabled}
-          audio={userChoices.audioEnabled}
-          onDisconnected={onLeave}
-        >
-          <div className="closed-captions-wrapper z-50">
-            <div className="closed-captions-container">
-              {caption?.message ? (
-                <>
-                  <div className="closed-captions-username">
-                    {caption.sender}
-                  </div>
-                  <span>:&nbsp;</span>
-                </>
-              ) : null}
-              <div className="closed-captions-text">{caption.message}</div>
-            </div>
-          </div>
-          <VideoConference chatMessageFormatter={formatChatMessageLinks} />
-          <DebugMode logLevel={LogLevel.info} />
-        </LiveKitRoom>
-      )}
+      <LiveKitRoom
+        token={data.token}
+        serverUrl={process.env.LIVEKIT_WS_URL || `wss://${process.env.NEXT_PUBLIC_LIVEKIT_API_HOST}`}
+        options={roomOptions}
+        video={userChoices.videoEnabled}
+        audio={userChoices.audioEnabled}
+        onConnected={(room) => {
+          if (!room) return;
+          console.log('Connected to LiveKit room:', room.name);
+          setRoom(room);
+          
+          room.on(RoomEvent.Disconnected, () => {
+            console.log('Room disconnected');
+            cleanup();
+            if (onLeave) onLeave();
+          });
+        }}
+        onDisconnected={cleanup}
+      >
+        <VideoConference />
+      </LiveKitRoom>
     </>
   );
 };

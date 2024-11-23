@@ -5,6 +5,7 @@ import { BsKeyboard } from "react-icons/bs";
 const JoinRoom = () => {
   const [roomName, setRoomName] = useState<string>("");
   const router = useRouter();
+
   return (
     <div className="flex items-center space-x-4 p-2 text-white">
       <label className="relative">

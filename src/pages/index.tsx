@@ -21,12 +21,32 @@ function ConnectionTab() {
 
   const [roomLoading, setRoomLoading] = React.useState(false);
   const createRoomHandler = async () => {
-    if (status === "unauthenticated") signIn("google");
-    else {
+    if (status === "unauthenticated") {
+      signIn("google");
+      return;
+    }
+
+    try {
       setRoomLoading(true);
-      const data = await createRoom.mutateAsync();
+      // Generate a new random room name
+      const timestamp = Date.now();
+      const random = Math.random().toString(36).substring(2, 8);
+      const roomName = `room-${random}-${timestamp}`;
+      console.log('Creating room:', roomName);
+      
+      const data = await createRoom.mutateAsync({ roomName });
+      console.log('Room created:', data);
+      
+      if (data?.room?.name) {
+        router.push(`/rooms/${data.room.name}`);
+      } else {
+        throw new Error('Room creation failed: Invalid response');
+      }
+    } catch (error) {
+      console.error('Error creating room:', error);
+      alert('Failed to create room. Please try again.');
+    } finally {
       setRoomLoading(false);
-      router.push(`/rooms/${data.roomName}`);
     }
   };
 
@@ -96,7 +116,6 @@ function ConnectionTab() {
             </div>
           </div>
 
-
           <div className="absolute inset-x-0 top-[calc(100%-13rem)] -z-10 transform-gpu overflow-hidden opacity-90 blur-3xl sm:top-[calc(100%-30rem)]">
             <svg
               className="relative left-[calc(50%+3rem)] h-[21.1875rem] max-w-none -translate-x-1/2 sm:left-[calc(50%+36rem)] sm:h-[42.375rem]"
@@ -133,6 +152,8 @@ function ConnectionTab() {
 }
 
 const Home: NextPage = () => {
+  const { data: session, status } = useSession();
+  
   return (
     <>
       <main data-lk-theme="default">

@@ -1,4 +1,5 @@
 import { LocalAudioTrack, LocalVideoTrack } from "livekit-client";
+import { Room } from "@prisma/client";
 
 export interface SessionProps {
   roomName: string;
@@ -11,6 +12,6 @@ export interface SessionProps {
 }
 
 export interface TokenResult {
-  identity: string;
-  accessToken: string;
+  room: Room;
+  token: string;
 }
